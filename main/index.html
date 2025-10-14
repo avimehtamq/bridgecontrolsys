@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MM6 Bridge Control</title>
+    <style>
+        body {
+            font-family: Calibri;
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        button {
+            font-size: 25px;
+            padding: 15px 30px;
+            margin: 20px 10px;
+            cursor: pointer;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+        }
+        
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button.imp {
+            background-color: #d7d700;
+            margin-top: 40%;
+            margin-left: 62.5%;
+        }
+
+        button.imp:hover {
+            background-color: #929202;
+        }
+
+        #sent {
+            margin-top: 30px;
+            font-size: 20px;
+            color: black;
+        }
+
+        #received {
+            margin-top: 10px;
+            font-size: 20px;
+            color: black;
+        }
+
+        #trafficstate {
+            margin-top: 20px;
+            font-size: 20px;
+            color: black;
+        }
+        
+         #bridgestate {
+            margin-top: 20px;
+            font-size: 20px;
+            color: black;
+        }
+
+        #ultrasonic {
+            margin-top: 20px;
+            font-size: 20px;
+            color: orchid;
+        }
+
+        .statebox {
+        border: 2px solid gray;
+        background-color: #E6F0FF;
+        margin-right: 10px;
+        padding: 5px; 
+        border-radius: 5px;
+        display: inline-block;
+        line-height: .70em;
+        }
+
+        .state-no {
+        border: 2px solid red;
+        background-color: #ff8d96;
+        }
+
+        .state-yes {
+        border: 2px solid green;
+        background-color: #75e68f;
+        }
+
+        .state-clo {
+		border: 2px solid red;
+        background-color: rgb(255, 214, 214);
+        }
+
+        .state-ope {
+		border: 2px solid green;
+        background-color: rgb(178, 199, 178);
+        }
+
+    </style>
+</head>
+
+<body>
+    <h1>MM6 Bridge Control</h1>
+    <div id="traffic-container" class = "statebox">
+    <p>Traffic:</p>
+    <p id="trafficstate">trafficstate</p>
+    </div>
+    <div id="bridge-container" class = "statebox">
+    <p> Bridge:</p>
+    <p id="bridgestate">bridgestate</p>
+    </div>
+    
+<br>
+
+    <button onclick="sendCommand('/halt')">Halt Road Traffic</button>
+    <button onclick="sendCommand('/open')">Open Bridge</button>
+    <button onclick="sendCommand('/close')">Close Bridge</button>
+
+    <p id="sent"></p>
+    <p id="received"></p>
+    
+    <button class="imp" onclick="sendCommand('/restart')">Restart Automation</button>
+
+</body>
+</html>
+
+    <script>
+        function sendCommand(cmd) {
+            fetch(cmd)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error("Response was unsuccessful");
+                    }
+                    return response.text();
+                })
+                .then(data => {
+                    document.getElementById("sent").innerText = "Command sent: " + cmd;
+                    document.getElementById("received").innerText = "Response received: " + data;
+                })
+                .catch(error => {
+                    document.getElementById("sent").innerText = "Error sending command: " + error;
+                    document.getElementById("received").innerText = "Response received: ";
+                });
+        }
+
+        async function updateStates() {
+        try {
+            const ts = document.getElementById("traffic-container");
+            const bs = document.getElementById("bridge-container");
+            ts.classList.remove("state-no", "state-yes");
+            bs.classList.remove("state-no", "state-yes", "state-clo", "state-ope");
+
+            const trafficResp = await fetch("/traffic_state");
+            const trafficText = await trafficResp.text();
+            let trafficState = trafficText;
+            switch (trafficText) {
+            case "0":
+            trafficState = "NO";
+            ts.classList.add("state-no");
+            break;
+            case "1":
+            trafficState = "YES";
+            ts.classList.add("state-yes");
+            break;
+            default:
+            ts.style.border = "2px solid gray";
+            ts.style.backgroundColor = "#f0f0f0";
+            break;
+            }
+            document.getElementById('trafficstate').innerText = trafficState;
+
+            const bridgeResp = await fetch('/bridge_state');
+            const bridgeText = await bridgeResp.text();
+            let bridgeState = bridgeText;
+            switch (bridgeText) {
+            case "0":
+            bridgeState = "CLOSE";
+            bs.classList.add("state-no");
+            break;
+            case "1":
+            bridgeState = "OPEN";
+            bs.classList.add("state-yes");
+            break;
+            case "2":
+            bridgeState = "CLOSING";
+            bs.classList.add("state-clo");
+            break;
+            case "3":
+            bridgeState = "OPENING";
+            bs.classList.add("state-ope");
+            default:
+            bs.style.border = "2px solid gray";
+            bs.style.backgroundColor = "#f0f0f0";
+            break;
+            }
+            document.getElementById("bridgestate").innerText = bridgeState;
+        } catch (error) {
+            console.error("Err: ", error);
+        }
+    }
+    setInterval(updateStates, 1000);
+    updateStates();
+    </script>
+</body>
+</html>
