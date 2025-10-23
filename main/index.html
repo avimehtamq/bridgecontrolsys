@@ -25,7 +25,7 @@
 
         button.imp {
             background-color: #d7d700;
-            margin-top: 40%;
+            margin-top: 20%;
             margin-left: 62.5%;
         }
 
@@ -57,6 +57,18 @@
             color: black;
         }
 
+         #lightstate {
+            margin-top: 20px;
+            font-size: 20px;
+            color: black;
+        }
+
+        #overridestate {
+            margin-top: 20px;
+            font-size: 20px;
+            color: black;
+        }
+
         #ultrasonic {
             margin-top: 20px;
             font-size: 20px;
@@ -66,8 +78,8 @@
         .statebox {
         border: 2px solid gray;
         background-color: #E6F0FF;
-        margin-right: 10px;
-        padding: 5px; 
+        margin: 15px;
+        padding: 10px; 
         border-radius: 5px;
         display: inline-block;
         line-height: .70em;
@@ -80,7 +92,7 @@
 
         .state-yes {
         border: 2px solid green;
-        background-color: #75e68f;
+        background-color: #6ae687;
         }
 
         .state-clo {
@@ -90,9 +102,8 @@
 
         .state-ope {
 		border: 2px solid green;
-        background-color: rgb(178, 199, 178);
+        background-color: rgb(168, 255, 168);
         }
-
     </style>
 </head>
 
@@ -103,8 +114,19 @@
     <p id="trafficstate">trafficstate</p>
     </div>
     <div id="bridge-container" class = "statebox">
-    <p> Bridge:</p>
+    <p>Bridge:</p>
     <p id="bridgestate">bridgestate</p>
+    </div>
+    <div id="light-container" class = "statebox">
+    <p>Lights:</p>
+    <p id="lightstate">lightstate</p>
+    </div>
+    
+    <br>
+
+    <div id="override-container" class = "statebox">
+    <p>Override:</p>
+    <p id="overridestate">overridestate</p>
     </div>
     
 <br>
@@ -112,14 +134,14 @@
     <button onclick="sendCommand('/halt')">Halt Road Traffic</button>
     <button onclick="sendCommand('/open')">Open Bridge</button>
     <button onclick="sendCommand('/close')">Close Bridge</button>
-
+    
     <p id="sent"></p>
     <p id="received"></p>
-    
-    <button class="imp" onclick="sendCommand('/restart')">Restart Automation</button>
 
+<br>
+
+    <button class="imp" onclick="sendCommand('/restart')">Restart Automation</button>
 </body>
-</html>
 
     <script>
         function sendCommand(cmd) {
@@ -140,13 +162,10 @@
                 });
         }
 
-        async function updateStates() {
+        async function updateTrafficState() {
         try {
-            const ts = document.getElementById("traffic-container");
-            const bs = document.getElementById("bridge-container");
-            ts.classList.remove("state-no", "state-yes");
-            bs.classList.remove("state-no", "state-yes", "state-clo", "state-ope");
-
+        const ts = document.getElementById("traffic-container");
+        ts.classList.remove("state-no", "state-yes");
             const trafficResp = await fetch("/traffic_state");
             const trafficText = await trafficResp.text();
             let trafficState = trafficText;
@@ -160,12 +179,21 @@
             ts.classList.add("state-yes");
             break;
             default:
+            trafficState = "N/A";
             ts.style.border = "2px solid gray";
             ts.style.backgroundColor = "#f0f0f0";
             break;
             }
             document.getElementById('trafficstate').innerText = trafficState;
+            } catch (error) {
+            console.error("Err: ", error);
+        }
+    }
 
+    async function updateBridgeState() {
+        try {
+        const bs = document.getElementById("bridge-container");
+        bs.classList.remove("state-no", "state-yes", "state-clo", "state-ope");
             const bridgeResp = await fetch('/bridge_state');
             const bridgeText = await bridgeResp.text();
             let bridgeState = bridgeText;
@@ -185,18 +213,79 @@
             case "3":
             bridgeState = "OPENING";
             bs.classList.add("state-ope");
+            break;
             default:
+            bridgeState = "N/A";
             bs.style.border = "2px solid gray";
             bs.style.backgroundColor = "#f0f0f0";
             break;
             }
             document.getElementById("bridgestate").innerText = bridgeState;
+            } catch (error) {
+            console.error("Err: ", error);
+        }
+    }
+
+    async function updateLightState() {
+        try {
+        const ls = document.getElementById("light-container");
+        ls.classList.remove("state-no", "state-yes");
+            const lightResp = await fetch("/light_state");
+            const lightText = await lightResp.text();
+            let lightState = lightText;
+
+            switch (lightText) {
+            case "0":
+            lightState = "STOP";
+            ls.classList.add("state-no");
+            break;
+            case "1":
+            lightState = "GO";
+            ls.classList.add("state-yes");
+            break;
+            default:
+            lightState = "N/A";
+            ls.style.border = "2px solid gray";
+            ls.style.backgroundColor = "#f0f0f0";
+            break;
+            }
+            document.getElementById("lightstate").innerText = lightState;
         } catch (error) {
             console.error("Err: ", error);
         }
     }
-    setInterval(updateStates, 1000);
-    updateStates();
+
+    async function updateOverrideState() {
+        try {
+        const os = document.getElementById("override-container");
+        os.classList.remove("state-no", "state-yes");
+            const overResp = await fetch("/override_state");
+            const overText = await overResp.text();
+            let overState = overText;
+
+            switch (overText) {
+            case "0":
+            overState = "OFF";
+            os.classList.add("state-no");
+            break;
+            case "1":
+            overState = "ON";
+            os.classList.add("state-yes");
+            break;
+            default:
+            overState = "N/A";
+            os.style.border = "2px solid gray";
+            os.style.backgroundColor = "#f0f0f0";
+            break;
+            }
+            document.getElementById("overridestate").innerText = overState;
+        } catch (error) {
+            console.error("Err: ", error);
+        }
+    }
+    setInterval(updateTrafficState, 2000);
+    setInterval(updateBridgeState, 2000);
+    setInterval(updateLightState, 2000);
+    setInterval(updateOverrideState, 2000);
     </script>
-</body>
 </html>
