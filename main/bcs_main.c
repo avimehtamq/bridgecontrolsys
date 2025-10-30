@@ -22,7 +22,7 @@
 #include "lwip/err.h"
 #include "lwip/sys.h"
 
-// Definition / Declaration section
+// Begin Definition / Declaration section
 
 #define ESP_WIFI_SSID      CONFIG_ESP_WIFI_SSID
 #define ESP_WIFI_PASS      CONFIG_ESP_WIFI_PASSWORD
@@ -38,27 +38,35 @@
 #define closing 2
 #define opening 3
 
-#define LED_PIN_1 15
-#define LED_PIN_2 16
-#define LED_PIN_3 17
-#define LED_PIN_4 18
-#define LED_PIN_5 20
-#define LED_PIN_6 22
+// Note: Road Amber lights are pins/channels 1, 2, Road Red lights are 3, 4, Boat lights are 5, 6
+#define LED_PIN_1 17
+#define LED_PIN_2 15
+#define LED_PIN_3 22
+#define LED_PIN_4 2
+#define LED_PIN_5 18
+#define LED_PIN_6 5
 #define LEDC_TIMER LEDC_TIMER_0
 #define LEDC_MODE LEDC_LOW_SPEED_MODE
-#define LEDC_DUTY_RES LEDC_TIMER_10_BIT
+#define LEDC_DUTY_RES LEDC_TIMER_10_BIT // 10 bits is 2^10 = 1024 possible resolution values
 #define LEDC_FREQUENCY 1000 // 1KHz 
 
-#define GPIO_PWM0A_OUT 19   // Set GPIO 19 as PWMA
-#define GPIO_PWM0B_OUT 21   // Set GPIO 21 as PWMB
+#define ENA_PIN 23 // Set GPIO 23 as ENA
+#define GPIO_PWM0A_OUT 21   // Set GPIO 21 as PWMA
+#define GPIO_PWM0B_OUT 19   // Set GPIO 19 as PWMB
+
+#define BUTTON_PIN_1 34 // Bridge OPEN
+#define BUTTON_PIN_2 35 // Bridge CLOSE
 
 static const char *TAG = "MM6-BB-AP"; // Info tag - will be seen in serial monitor
 static int ts = 0; // Traffic state *IMPORTANT* note: false = 0, true = 1 | false = nodetect, true = detect
 static int bs = 0; // Bridge state *IMPORTANT* note: false = 0, true = 1, closing = 2, opening = 3 | false = close, true = open, closing = closing, opening = opening
-static int ls = 0; // Light state *IMPORTANT* <note> based on MARITIME TRAFFIC: false = 0, true = 1 | false = stop, true = go 
+static int ls = 0; // Light state *IMPORTANT* note based on MARITIME TRAFFIC: false = 0, true = 1 | false = stop, true = go 
 static int os = 0; // Override state *IMPORTANT* note: false = 0, true = 1 | false = nooverride, true = override
 uint32_t d1 = 0, d2 = 0; // Distances of respective sensors (numerical association i.e. s1 to d1)
-TaskHandle_t state; // Needs declaration for FreeRTOS task purposes
+TaskHandle_t state; 
+TaskHandle_t button; // Needs declaration for FreeRTOS task purposes
+
+// End Definition / Declaration section
 
 // Begin configuration section
 // Sensors
@@ -68,22 +76,24 @@ static const ultrasonic_sensor_t s1 = {
 };
 static const ultrasonic_sensor_t s2 = {
     .trigger_pin = 27,
-    .echo_pin = 34,
+    .echo_pin = 39,
 };
 
 // Motor
 static void mcpwm_initialise()
 {
     ESP_LOGI(TAG, "Initialising MCPWM GPIO...\n");
+    gpio_set_direction(ENA_PIN, GPIO_MODE_OUTPUT);
     mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, GPIO_PWM0A_OUT);
     mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0B, GPIO_PWM0B_OUT);
-    
+
     ESP_LOGI(TAG, "Initilisating MCPWM Configuration");
     mcpwm_config_t pwm_config;
-    pwm_config.frequency = 500;    // frequency = 500Hz,   
-    pwm_config.cmpr_a = 0;    // duty cycle of PWMA = 0
-    pwm_config.cmpr_b = 0;    // duty cycle of PWMB = 0
+    pwm_config.frequency = 1000;    // frequency = 1000Hz,   
+    pwm_config.cmpr_a = 0;    // duty cycle of PWMA = 0%
+    pwm_config.cmpr_b = 0;    // duty cycle of PWMB = 0%
     pwm_config.duty_mode = MCPWM_DUTY_MODE_0;
+    pwm_config.counter_mode = MCPWM_UP_COUNTER,
     mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);    //Configure PWM0A & PWM0B with above settings
 }
 
@@ -99,7 +109,7 @@ static void light_initialise()
     };
     ledc_timer_config(&ledc_timer);
 
-    // Configure LEDC channels
+    // Configure LEDC channels | Note: Road Amber lights are pins/channels 1, 2, Road Red lights are 3, 4, Boat lights are 5, 6
     ledc_channel_config_t ledc_channel_1 = {
         .gpio_num = LED_PIN_1,
         .speed_mode = LEDC_MODE,
@@ -155,10 +165,20 @@ static void light_initialise()
     ledc_channel_config(&ledc_channel_6);
 }
 
+// Buttons
+static void button_initialise() 
+{
+gpio_input_enable(BUTTON_PIN_1);
+gpio_input_enable(BUTTON_PIN_2);
+gpio_set_direction(BUTTON_PIN_1, GPIO_MODE_INPUT);
+gpio_set_direction(BUTTON_PIN_2, GPIO_MODE_INPUT);
+}
+
 // Begin component function section
 esp_err_t readSensors() // This method saves the ultrasonic read in the distance floats
 {
     if (ultrasonic_measure_cm(&s1, 100, &d1) == ESP_ERR_TIMEOUT && ultrasonic_measure_cm(&s2, 100, &d2) == ESP_ERR_TIMEOUT) {
+    d1 = 0.0f, d2 = 0.0f;
     return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -175,7 +195,7 @@ void motor_open(mcpwm_unit_t mcpwm_num, mcpwm_timer_t timer_num, float duty_cycl
 void motor_close(mcpwm_unit_t mcpwm_num, mcpwm_timer_t timer_num, float duty_cycle)
 {
     mcpwm_set_signal_low(mcpwm_num, timer_num, MCPWM_OPR_A);
-    mcpwm_set_duty(mcpwm_num, timer_num, MCPWM_OPR_A, duty_cycle);
+    mcpwm_set_duty(mcpwm_num, timer_num, MCPWM_OPR_B, duty_cycle);
     mcpwm_set_duty_type(mcpwm_num, timer_num, MCPWM_OPR_B, MCPWM_DUTY_MODE_0); //call this each time, if operator was previously in low/high state
 }
 
@@ -186,20 +206,20 @@ void motor_stop(mcpwm_unit_t mcpwm_num, mcpwm_timer_t timer_num)
 }
 
 // Light control
-// Note: Road Amber lights are channels 1, 2, Road Red lights are 3, 4, Boat lights are 5, 6
+// Note: Road Amber lights are pins/channels 1, 2, Road Red lights are 3, 4, Boat lights are 5, 6
 void roadlight_amber()
 {
-ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_1, 100);
+ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_1, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_1);
-ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_2, 100);
+ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_2, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_2);
 }
 
 void roadlight_stop()
 {
-ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_3, 100);
+ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_3, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_3);
-ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_4, 100);
+ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_4, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_4);
 }
 
@@ -225,9 +245,9 @@ ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_6);
 
 void waterlight_stop()
 {
-ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_5, 100);
+ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_5, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_5);
-ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_6, 100);
+ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_6, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_6);
 }
 
@@ -252,11 +272,6 @@ void setTrafficState() // Traffic state dependent on what the sensors read from 
         return;
         }
     ESP_LOGI(TAG, "Set Traffic State to: %d", ts);
-}
-
-void overrideTrafficState(int d)
-{
-    ts = d ? true : false;
 }
 
 int getBridgeState() 
@@ -312,38 +327,62 @@ switch (bs) {
 return a;
 }
 
+void light_task(void *pvParameters) // Inverse method: we need to change the light state to its counterpart
+{
+    switch(getLightState()) {
+        case false: // Boat detected, stop road traffic and let boat go
+            roadlight_amber();
+            vTaskDelay(500);
+            roadlight_stop();
+            waterlight_go();
+            setLightState(true);
+            vTaskDelete(NULL);
+            break;
+        case true: // No boat detected, stop boat traffic and let road go
+            setLightState(false);
+            waterlight_stop();
+            vTaskDelay(500);
+            roadlight_go();
+            vTaskDelete(NULL);
+            break;
+    }
+}
+
 // Creates a task for motor control when requested by handlers
-void motor_task()
+void motor_task(void *pvParameters)
 {
     int target = 0;
-    switch (bs) {
+    switch (getBridgeState()) {
         case closing:
         target = false;
-        ESP_LOGI(TAG, "Close motor");
+        gpio_set_level(ENA_PIN, 1);
         while (bs != target) {
-        motor_close(MCPWM_UNIT_0, MCPWM_TIMER_0, 25.0);
+        motor_close(MCPWM_UNIT_0, MCPWM_TIMER_0, 5.0);
+        ESP_LOGI(TAG, "Close motor");
         vTaskDelay(50);
         }
         motor_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
+        gpio_set_level(ENA_PIN, 0);
         setBridgeState(target);
         vTaskDelete(NULL);
         break;
 
         case opening:
         target = true;
-        ESP_LOGI(TAG, "Open motor");
+        gpio_set_level(ENA_PIN, 1);
         while (bs != target) {
-        motor_open(MCPWM_UNIT_0, MCPWM_TIMER_0, 25.0);
+        motor_open(MCPWM_UNIT_0, MCPWM_TIMER_0, 5.0);
+        ESP_LOGI(TAG, "Open motor");
         vTaskDelay(50);
         }
         motor_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
+        gpio_set_level(ENA_PIN, 0);
         setBridgeState(target);
         vTaskDelete(NULL);
         break;
 
         default:
         ESP_LOGI(TAG, "Ongoing operation.");
-        vTaskDelete(NULL);
         break;
     }
 }        
@@ -353,6 +392,7 @@ void motor_task()
 void nodetect_handler()
 {   
     if(getBridgeState() == true) { // OPEN
+    xTaskCreatePinnedToCore(light_task, "light_task", 2048, NULL, 3, NULL, 0);
     setBridgeState(closing); 
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
     }
@@ -361,11 +401,10 @@ void nodetect_handler()
 
 void detect_handler()
 {
-    if(getBridgeState() == false) {
+    if(getBridgeState() == false) { // CLOSE
     ESP_LOGI(TAG, "Detected! Sensors: %dcm, %dcm, Traffic state: %d, Bridge state: %d", d1, d2, getTrafficState(), getBridgeState());
+    xTaskCreatePinnedToCore(light_task, "light_task", 2048, NULL, 3, NULL, 0);
     setBridgeState(opening);
-    roadlight_amber();
-    roadlight_stop();
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
     }
 }
@@ -376,7 +415,7 @@ void state_task(void *pvParameters)
 while (true) {
     while (!os) {
     setTrafficState();
-    ESP_LOGI("CORE", "State Task is running on core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "TS:%d, BS:%d, LS:%d, OS:%d", getTrafficState(), getBridgeState(), getLightState(), getOverrideState());
         if(getBridgeState() != closing || getBridgeState() != opening) {
             switch (getTrafficState()) {
                 case false:
@@ -389,6 +428,20 @@ while (true) {
         }
     vTaskSuspend(state);
     }
+}
+
+void button_task(void *pvParameters) 
+{
+while (true) {
+    if(gpio_get_level(BUTTON_PIN_1)) {
+        setBridgeState(false);
+        }
+    if(gpio_get_level(BUTTON_PIN_2)) {
+        setBridgeState(true);
+        }
+    vTaskDelay(25); // check every quarter-second 
+    }
+    vTaskDelete(button);
 }
 
 // End state section                 
@@ -434,6 +487,15 @@ static esp_err_t close_handler(httpd_req_t *req)
     setOverrideState(true);
     setBridgeState(closing);
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
+    httpd_resp_send(req, "CLOSE RECEIVED", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t stop_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "CMD:STOP");
+    setOverrideState(true);
+    motor_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
     httpd_resp_send(req, "CLOSE RECEIVED", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -511,6 +573,13 @@ static const httpd_uri_t bcs_close = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t bcs_stop = {
+    .uri       = "/stop",
+    .method    = HTTP_GET,
+    .handler   = stop_handler,
+    .user_ctx  = NULL
+};
+
 static const httpd_uri_t bcs_restart_auto = {
     .uri       = "/restart",
     .method    = HTTP_GET,
@@ -549,8 +618,8 @@ static const httpd_uri_t bcs_override_state = {
 httpd_handle_t start_webserver() {
 httpd_handle_t server = NULL;
 httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-config.max_uri_handlers = 9;
-config.core_id = 1;
+config.max_uri_handlers = 10;
+config.core_id = 1; // We want the webserver to handle itself on Core 1
 
     if (httpd_start(&server, &config) == ESP_OK) {
         ESP_LOGI(TAG, "Server started successfully, registering URI handlers...");
@@ -558,6 +627,7 @@ config.core_id = 1;
         httpd_register_uri_handler(server, &bcs_halt);
         httpd_register_uri_handler(server, &bcs_open);
         httpd_register_uri_handler(server, &bcs_close);
+        httpd_register_uri_handler(server, &bcs_stop);
         httpd_register_uri_handler(server, &bcs_restart_auto);
         httpd_register_uri_handler(server, &bcs_traffic_state);
         httpd_register_uri_handler(server, &bcs_bridge_state);
@@ -662,7 +732,9 @@ void app_main(void)
     ESP_ERROR_CHECK(ultrasonic_init(&s2));
     mcpwm_initialise();
     light_initialise();
+    button_initialise();
 
     // State task setup
     xTaskCreatePinnedToCore(state_task, "state_task", 2048, NULL, 2, &state, 0);
+    xTaskCreatePinnedToCore(button_task, "button_task", 2048, NULL, 3, &button, 0);
 }
