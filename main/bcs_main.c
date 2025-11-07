@@ -36,7 +36,16 @@
 #endif
 
 #define closing 2
-#define opening 3
+#define opening 3 // Extra states for Bridge
+
+#define TRIG_PIN_1 26
+#define TRIG_PIN_2 27
+#define ECHO_PIN_1 36
+#define ECHO_PIN_2 14 // Sensor PINs
+
+#define ENA_PIN 23 // Set GPIO 23 as ENA
+#define GPIO_PWM0A_OUT 21   // Set GPIO 21 as PWMA
+#define GPIO_PWM0B_OUT 19   // Set GPIO 19 as PWMB (for motor)
 
 // Note: Road Amber lights are pins/channels 1, 2, Road Red lights are 3, 4, Boat lights are 5, 6
 #define LED_PIN_1 17
@@ -50,44 +59,39 @@
 #define LEDC_DUTY_RES LEDC_TIMER_10_BIT // 10 bits is 2^10 = 1024 possible resolution values
 #define LEDC_FREQUENCY 1000 // 1KHz 
 
-#define ENA_PIN 23 // Set GPIO 23 as ENA
-#define GPIO_PWM0A_OUT 21   // Set GPIO 21 as PWMA
-#define GPIO_PWM0B_OUT 19   // Set GPIO 19 as PWMB
-
 #define BUTTON_PIN_1 34 // Bridge OPEN
 #define BUTTON_PIN_2 35 // Bridge CLOSE
 
 static const char *TAG = "MM6-BB-AP"; // Info tag - will be seen in serial monitor
-static int ts = 0; // Traffic state *IMPORTANT* note: false = 0, true = 1 | false = nodetect, true = detect
-static int bs = 0; // Bridge state *IMPORTANT* note: false = 0, true = 1, closing = 2, opening = 3 | false = close, true = open, closing = closing, opening = opening
-static int ls = 0; // Light state *IMPORTANT* note based on MARITIME TRAFFIC: false = 0, true = 1 | false = stop, true = go 
-static int os = 0; // Override state *IMPORTANT* note: false = 0, true = 1 | false = nooverride, true = override
-uint32_t d1 = 0, d2 = 0; // Distances of respective sensors (numerical association i.e. s1 to d1)
-TaskHandle_t state; 
-TaskHandle_t button; // Needs declaration for FreeRTOS task purposes
+static int ts = false; // Traffic state *IMPORTANT* note: false = 0, true = 1 | false = nodetect, true = detect
+static int bs = false; // Bridge state *IMPORTANT* note: false = 0, true = 1, closing = 2, opening = 3 | false = close, true = open, closing = closing, opening = opening
+static int ls = false; // Light state *IMPORTANT* note based on MARITIME TRAFFIC: false = 0, true = 1 | false = stop, true = go 
+static int os = false; // Override state *IMPORTANT* note: false = 0, true = 1 | false = nooverride, true = override
+uint32_t d1 = 0, d2 = 0; // Distances of respective sensors (in cm, numerical association i.e. s1 to d1)
+TaskHandle_t state, button; // Needs declaration for FreeRTOS task purposes
 
 // End Definition / Declaration section
 
 // Begin configuration section
+
 // Sensors
-static const ultrasonic_sensor_t s1 = {
-    .trigger_pin = 26,
-    .echo_pin = 36,
+static const ultrasonic_sensor_t s1 = { // R
+    .trigger_pin = TRIG_PIN_1,
+    .echo_pin = ECHO_PIN_1,
 };
-static const ultrasonic_sensor_t s2 = {
-    .trigger_pin = 27,
-    .echo_pin = 39,
+static const ultrasonic_sensor_t s2 = { // L
+    .trigger_pin = TRIG_PIN_2,
+    .echo_pin = ECHO_PIN_2,
 };
 
 // Motor
 static void mcpwm_initialise()
 {
-    ESP_LOGI(TAG, "Initialising MCPWM GPIO...\n");
     gpio_set_direction(ENA_PIN, GPIO_MODE_OUTPUT);
     mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, GPIO_PWM0A_OUT);
     mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0B, GPIO_PWM0B_OUT);
+    ESP_LOGI(TAG, "Initialised MCPWM GPIO...\n");
 
-    ESP_LOGI(TAG, "Initilisating MCPWM Configuration");
     mcpwm_config_t pwm_config;
     pwm_config.frequency = 1000;    // frequency = 1000Hz,   
     pwm_config.cmpr_a = 0;    // duty cycle of PWMA = 0%
@@ -95,6 +99,7 @@ static void mcpwm_initialise()
     pwm_config.duty_mode = MCPWM_DUTY_MODE_0;
     pwm_config.counter_mode = MCPWM_UP_COUNTER,
     mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);    //Configure PWM0A & PWM0B with above settings
+    ESP_LOGI(TAG, "Initialised MCPWM Configuration");
 }
 
 // Lights
@@ -151,7 +156,7 @@ static void light_initialise()
         .speed_mode = LEDC_MODE,
         .channel = LEDC_CHANNEL_5,
         .timer_sel = LEDC_TIMER_0,
-        .duty = 0
+        .duty = 1024
     };
     ledc_channel_config(&ledc_channel_5);
 
@@ -160,9 +165,10 @@ static void light_initialise()
         .speed_mode = LEDC_MODE,
         .channel = LEDC_CHANNEL_6,
         .timer_sel = LEDC_TIMER_0,
-        .duty = 0
+        .duty = 1024
     };
     ledc_channel_config(&ledc_channel_6);
+    ESP_LOGI(TAG, "Initialised LED GPIO Configuration");
 }
 
 // Buttons
@@ -172,13 +178,17 @@ gpio_input_enable(BUTTON_PIN_1);
 gpio_input_enable(BUTTON_PIN_2);
 gpio_set_direction(BUTTON_PIN_1, GPIO_MODE_INPUT);
 gpio_set_direction(BUTTON_PIN_2, GPIO_MODE_INPUT);
+ESP_LOGI(TAG, "Initialised Button GPIO Configuration");
 }
 
+// End configuration section
+
 // Begin component function section
-esp_err_t readSensors() // This method saves the ultrasonic read in the distance floats
+
+esp_err_t readSensors() // This method saves the ultrasonic read in distance floats (d1, d2)
 {
     if (ultrasonic_measure_cm(&s1, 100, &d1) == ESP_ERR_TIMEOUT && ultrasonic_measure_cm(&s2, 100, &d2) == ESP_ERR_TIMEOUT) {
-    d1 = 0.0f, d2 = 0.0f;
+    ESP_LOGI(TAG, "Both sensors timed out.");
     return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
@@ -189,14 +199,14 @@ void motor_open(mcpwm_unit_t mcpwm_num, mcpwm_timer_t timer_num, float duty_cycl
 {
     mcpwm_set_signal_low(mcpwm_num, timer_num, MCPWM_OPR_B);
     mcpwm_set_duty(mcpwm_num, timer_num, MCPWM_OPR_A, duty_cycle);
-    mcpwm_set_duty_type(mcpwm_num, timer_num, MCPWM_OPR_A, MCPWM_DUTY_MODE_0); //call this each time, if operator was previously in low/high state
+    mcpwm_set_duty_type(mcpwm_num, timer_num, MCPWM_OPR_A, MCPWM_DUTY_MODE_0); // call this each time, if operator was previously in low/high state
 }
 
 void motor_close(mcpwm_unit_t mcpwm_num, mcpwm_timer_t timer_num, float duty_cycle)
 {
     mcpwm_set_signal_low(mcpwm_num, timer_num, MCPWM_OPR_A);
     mcpwm_set_duty(mcpwm_num, timer_num, MCPWM_OPR_B, duty_cycle);
-    mcpwm_set_duty_type(mcpwm_num, timer_num, MCPWM_OPR_B, MCPWM_DUTY_MODE_0); //call this each time, if operator was previously in low/high state
+    mcpwm_set_duty_type(mcpwm_num, timer_num, MCPWM_OPR_B, MCPWM_DUTY_MODE_0); // call this each time, if operator was previously in low/high state
 }
 
 void motor_stop(mcpwm_unit_t mcpwm_num, mcpwm_timer_t timer_num)
@@ -251,7 +261,7 @@ ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_6, 1024);
 ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_6);
 }
 
-// End functions section
+// End component function section
 
 // Begin state section
 
@@ -260,18 +270,15 @@ int getTrafficState()
     return ts;
 }
 
-void setTrafficState() // Traffic state dependent on what the sensors read from readSensors()
+void setTrafficState() // Traffic state dependent on readSensors()
 {
-    ts = false; // Assuming maritime traffic is slow majority of the time
     if(readSensors() != ESP_ERR_TIMEOUT) {
-        if((d1 > 50 && d1 < 80) || (d2 > 50 && d2 < 80)) {
+        if((d1 > 20 && d1 < 30) || (d2 > 20 && d2 < 30)) {
         ts = true;
-        }
-    } else {
-        ESP_LOGI(TAG, "Traffic State remains: %d", ts);
         return;
         }
-    ESP_LOGI(TAG, "Set Traffic State to: %d", ts);
+    }
+    ESP_LOGI(TAG, "Traffic State remains: %d", ts);
 }
 
 int getBridgeState() 
@@ -313,7 +320,7 @@ void setOverrideState(int d)
     ESP_LOGI(TAG, "Set Override State to: %d", d);
 }
 
-char* bridgeStateString()
+char* bridgeStateString() // Workaround method to allow for HTTP messaging (it is restricted to Strings)
 {
 char* a = "";
 
@@ -327,6 +334,7 @@ switch (bs) {
 return a;
 }
 
+// Creates a task for light control when requested
 void light_task(void *pvParameters) // Inverse method: we need to change the light state to its counterpart
 {
     switch(getLightState()) {
@@ -336,6 +344,7 @@ void light_task(void *pvParameters) // Inverse method: we need to change the lig
             roadlight_stop();
             waterlight_go();
             setLightState(true);
+            ESP_LOGI(TAG, "Light task completed.");
             vTaskDelete(NULL);
             break;
         case true: // No boat detected, stop boat traffic and let road go
@@ -343,12 +352,13 @@ void light_task(void *pvParameters) // Inverse method: we need to change the lig
             waterlight_stop();
             vTaskDelay(500);
             roadlight_go();
+            ESP_LOGI(TAG, "Light task completed.");
             vTaskDelete(NULL);
             break;
     }
 }
 
-// Creates a task for motor control when requested by handlers
+// Creates a task for motor control when requested
 void motor_task(void *pvParameters)
 {
     int target = 0;
@@ -358,12 +368,12 @@ void motor_task(void *pvParameters)
         gpio_set_level(ENA_PIN, 1);
         while (bs != target) {
         motor_close(MCPWM_UNIT_0, MCPWM_TIMER_0, 5.0);
-        ESP_LOGI(TAG, "Close motor");
+        ESP_LOGI(TAG, "Closing.");
         vTaskDelay(50);
         }
         motor_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
         gpio_set_level(ENA_PIN, 0);
-        setBridgeState(target);
+        ESP_LOGI(TAG, "Motor task completed.");
         vTaskDelete(NULL);
         break;
 
@@ -372,12 +382,12 @@ void motor_task(void *pvParameters)
         gpio_set_level(ENA_PIN, 1);
         while (bs != target) {
         motor_open(MCPWM_UNIT_0, MCPWM_TIMER_0, 5.0);
-        ESP_LOGI(TAG, "Open motor");
+        ESP_LOGI(TAG, "Opening.");
         vTaskDelay(50);
         }
         motor_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
         gpio_set_level(ENA_PIN, 0);
-        setBridgeState(target);
+        ESP_LOGI(TAG, "Motor task completed.");
         vTaskDelete(NULL);
         break;
 
@@ -396,13 +406,13 @@ void nodetect_handler()
     setBridgeState(closing); 
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
     }
-    ESP_LOGI(TAG, "Detecting... Sensors: %dcm, %dcm, Traffic state: %d, Bridge state: %d", d1, d2, getTrafficState(), getBridgeState());
+    ESP_LOGI(TAG, "Detecting... Sensors: %dcm, %dcm", d1, d2);
 }
 
 void detect_handler()
 {
     if(getBridgeState() == false) { // CLOSE
-    ESP_LOGI(TAG, "Detected! Sensors: %dcm, %dcm, Traffic state: %d, Bridge state: %d", d1, d2, getTrafficState(), getBridgeState());
+    ESP_LOGI(TAG, "Detected! Sensors: %dcm, %dcm", d1, d2);
     xTaskCreatePinnedToCore(light_task, "light_task", 2048, NULL, 3, NULL, 0);
     setBridgeState(opening);
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
@@ -426,6 +436,7 @@ while (true) {
          }
         vTaskDelay(90); // check every second (with grace for sensor timeout of 0.1 seconds)
         }
+    ESP_LOGI(TAG, "State task suspended.");
     vTaskSuspend(state);
     }
 }
@@ -434,20 +445,22 @@ void button_task(void *pvParameters)
 {
 while (true) {
     if(gpio_get_level(BUTTON_PIN_1)) {
+        ESP_LOGI(TAG, "Button TOP triggered.");
         setBridgeState(false);
         }
     if(gpio_get_level(BUTTON_PIN_2)) {
+        ESP_LOGI(TAG, "Button BOT triggered.");
         setBridgeState(true);
         }
     vTaskDelay(25); // check every quarter-second 
     }
+    ESP_LOGI(TAG, "Button task completed.");
     vTaskDelete(button);
 }
 
 // End state section                 
 
 // Begin Webserver section 
-// This section deals with the ESP32 hosted webpage and its commands
 
 static esp_err_t index_handler(httpd_req_t *req)
 {
@@ -461,9 +474,8 @@ static esp_err_t index_handler(httpd_req_t *req)
 
 static esp_err_t halt_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "CMD:HALT");
-    setOverrideState(true);
     httpd_resp_send(req, "HALT RECEIVED", HTTPD_RESP_USE_STRLEN);
+    setOverrideState(true);
     setLightState(false);
     roadlight_stop();
     waterlight_stop();
@@ -472,44 +484,39 @@ static esp_err_t halt_handler(httpd_req_t *req)
 
 static esp_err_t open_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "CMD:OPEN");
+    httpd_resp_send(req, "OPEN RECEIVED", HTTPD_RESP_USE_STRLEN);
     setOverrideState(true);
     setBridgeState(opening);
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
     ESP_LOGI(TAG, "TS: %d, OS: %d", getTrafficState(), getOverrideState());
-    httpd_resp_send(req, "OPEN RECEIVED", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
 static esp_err_t close_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "CMD:CLOSE");
+    httpd_resp_send(req, "CLOSE RECEIVED", HTTPD_RESP_USE_STRLEN);
     setOverrideState(true);
     setBridgeState(closing);
     xTaskCreatePinnedToCore(motor_task, "motor_task", 2048, NULL, 3, NULL, 0);
-    httpd_resp_send(req, "CLOSE RECEIVED", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
 static esp_err_t stop_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "CMD:STOP");
+    httpd_resp_send(req, "STOP RECEIVED", HTTPD_RESP_USE_STRLEN);
     setOverrideState(true);
     motor_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
-    httpd_resp_send(req, "CLOSE RECEIVED", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
 static esp_err_t restart_auto_handler(httpd_req_t *req)
 {
     if(!getOverrideState()) {
-    ESP_LOGI(TAG, "Already automated...");
-    httpd_resp_send(req, "Already automated", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "ALREADY AUTOMATED", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
     } else {
-    ESP_LOGI(TAG, "Sending restart command...");
     setOverrideState(false);
-    httpd_resp_send(req, "Restarting automation.", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "RESTART AUTOMATION", HTTPD_RESP_USE_STRLEN);
     vTaskResume(state);
     return ESP_OK;
     }
@@ -711,30 +718,20 @@ void wifi_init_bcs(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "wifi_init_bcs finished. SSID:%s password:%s channel:%d",
-             ESP_WIFI_SSID, ESP_WIFI_PASS, ESP_WIFI_CHANNEL);
 }
 
 // End wifi section
 
 void app_main(void)
 {
-    // WiFi setup
     ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
     wifi_init_bcs();
- 
-    // Webserver setup
     start_webserver();
-
-    // Component setup
     ESP_ERROR_CHECK(ultrasonic_init(&s1));
     ESP_ERROR_CHECK(ultrasonic_init(&s2));
     mcpwm_initialise();
     light_initialise();
     button_initialise();
-
-    // State task setup
     xTaskCreatePinnedToCore(state_task, "state_task", 2048, NULL, 2, &state, 0);
     xTaskCreatePinnedToCore(button_task, "button_task", 2048, NULL, 3, &button, 0);
 }
